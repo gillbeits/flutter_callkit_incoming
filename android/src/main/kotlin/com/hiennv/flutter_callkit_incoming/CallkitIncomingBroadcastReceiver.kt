@@ -108,12 +108,11 @@ class CallkitIncomingBroadcastReceiver : BroadcastReceiver() {
                     callkitNotificationManager.showIncomingNotification(data)
                     sendEventFlutter(CallkitConstants.ACTION_CALL_INCOMING, data)
                     addCall(context, Data.fromBundle(data))
-                    if (callkitNotificationManager.incomingChannelEnabled()) {
-                        val soundPlayerServiceIntent =
-                            Intent(context, CallkitSoundPlayerService::class.java)
-                        soundPlayerServiceIntent.putExtras(data)
-                        context.startService(soundPlayerServiceIntent)
-                    }
+                    // CallkitSoundPlayerService здесь больше не нужен: рингтон и вибрация заданы
+                    // на самом канале (NOTIFICATION_CHANNEL_ID_INCOMING). Прежний
+                    // context.startService() из фона падал с IllegalStateException, и входящий
+                    // звонок при закрытом приложении оставался беззвучным. Остальные stopService()
+                    // по accept/decline/timeout безвредны и оставлены как есть.
                 } catch (error: Exception) {
                     Log.e(TAG, null, error)
                 }

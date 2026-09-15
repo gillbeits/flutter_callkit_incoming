@@ -14,6 +14,8 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.drawable.Drawable
+import android.media.AudioAttributes
+import android.media.AudioManager
 import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
@@ -43,7 +45,10 @@ class CallkitNotificationManager(private val context: Context) {
 
         const val EXTRA_TIME_START_CALL = "EXTRA_TIME_START_CALL"
 
-        private const val NOTIFICATION_CHANNEL_ID_INCOMING = "callkit_incoming_channel_id"
+        // v2: у прежнего канала звук выставлен в null, и поменять его уже нельзя —
+        // настройки канала неизменяемы после создания. Новый id нужен, чтобы рингтон
+        // применился на уже установленных приложениях, а не только на новых.
+        private const val NOTIFICATION_CHANNEL_ID_INCOMING = "callkit_incoming_channel_id_v2"
         const val NOTIFICATION_CHANNEL_ID_ONGOING = "callkit_ongoing_channel_id"
         private const val NOTIFICATION_CHANNEL_ID_MISSED = "callkit_missed_channel_id"
     }
@@ -416,6 +421,31 @@ class CallkitNotificationManager(private val context: Context) {
                 Build.VERSION.SDK_INT < Build.VERSION_CODES.O
     }
 
+    /**
+     * Рингтон для канала входящего звонка. Берётся из того звонка, который создал канал:
+     * настройки канала после создания неизменяемы. Приложение всегда передаёт
+     * ringtonePath = "system_ringtone_default", так что значение стабильно.
+     */
+    private fun getIncomingRingtoneUri(data: Bundle): Uri {
+        val fileName = data.getString(CallkitConstants.EXTRA_CALLKIT_RINGTONE_PATH, "")
+        if (!TextUtils.isEmpty(fileName) && !fileName.equals("system_ringtone_default", true)) {
+            try {
+                val resId = context.resources.getIdentifier(fileName, "raw", context.packageName)
+                if (resId != 0) {
+                    return Uri.parse("android.resource://${context.packageName}/$resId")
+                }
+            } catch (_: Exception) {
+            }
+        }
+        return try {
+            // getActualDefaultRingtoneUri падает на части устройств с кастомным рингтоном
+            RingtoneManager.getActualDefaultRingtoneUri(context, RingtoneManager.TYPE_RINGTONE)
+                ?: Settings.System.DEFAULT_RINGTONE_URI
+        } catch (_: Exception) {
+            Settings.System.DEFAULT_RINGTONE_URI
+        }
+    }
+
     public fun createNotificationChanel(data: Bundle) {
         val incomingCallChannelName = data.getString(
             CallkitConstants.EXTRA_CALLKIT_INCOMING_CALL_NOTIFICATION_CHANNEL_NAME,
@@ -433,9 +463,7 @@ class CallkitNotificationManager(private val context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             getNotificationManager().apply {
                 var channelCall = getNotificationChannel(NOTIFICATION_CHANNEL_ID_INCOMING)
-                if (channelCall != null) {
-                    channelCall.setSound(null, null)
-                } else {
+                if (channelCall == null) {
                     channelCall = NotificationChannel(
                         NOTIFICATION_CHANNEL_ID_INCOMING,
                         incomingCallChannelName,
@@ -447,7 +475,17 @@ class CallkitNotificationManager(private val context: Context) {
                         lightColor = Color.RED
                         enableLights(true)
                         enableVibration(true)
-                        setSound(null, null)
+                        // Звонит сам канал, а не CallkitSoundPlayerService: тот запускался через
+                        // context.startService() и из фона падал с IllegalStateException, из-за чего
+                        // входящий звонок при закрытом приложении был беззвучным.
+                        setSound(
+                            getIncomingRingtoneUri(data),
+                            AudioAttributes.Builder()
+                                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                                .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                                .setLegacyStreamType(AudioManager.STREAM_RING)
+                                .build()
+                        )
                     }
                 }
                 channelCall.lockscreenVisibility = Notification.VISIBILITY_PUBLIC
