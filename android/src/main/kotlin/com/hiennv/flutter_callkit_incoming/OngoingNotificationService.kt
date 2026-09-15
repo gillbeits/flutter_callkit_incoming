@@ -18,6 +18,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
 import android.text.TextUtils
+import android.util.Log
 import android.view.View
 import android.widget.RemoteViews
 import androidx.core.app.NotificationCompat
@@ -30,6 +31,10 @@ import com.squareup.picasso.Target
 import okhttp3.OkHttpClient
 
 class OngoingNotificationService : Service() {
+
+    companion object {
+        private const val TAG = "CallkitOngoingService"
+    }
 
 
     private lateinit var notificationBuilder: NotificationCompat.Builder
@@ -178,11 +183,34 @@ class OngoingNotificationService : Service() {
             else {
                 serviceType = serviceType or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
             }
-            startForeground(
-                onGoingNotificationId,
-                notification,
-                serviceType
-            )
+            try {
+                startForeground(onGoingNotificationId, notification, serviceType)
+            } catch (e: Exception) {
+                // Типы microphone/camera подчиняются правилу while-in-use: поднять их из фона
+                // нельзя. Это ровно случай «приложение свёрнуто, звонок принят из уведомления»:
+                // процесс жив, broadcast долетает раньше, чем активити выходит на передний план,
+                // и система кидает SecurityException. Без перехвата он убивал процесс, потому что
+                // startForeground вызывается прямо из onStartCommand.
+                // phoneCall этому правилу не подчиняется — ему довольно MANAGE_OWN_CALLS,
+                // обычного install-time разрешения, поэтому звонок продолжается.
+                // ВНИМАНИЕ: маска остаётся урезанной до конца звонка — сама она не восстановится.
+                // Полную вернёт только повторный запуск сервиса (ACTION_CALL_START, то есть
+                // FlutterCallkitIncoming.startCall со стороны приложения). Пока приложение на
+                // переднем плане, микрофону это не мешает; риск — если свернуть его посреди звонка.
+                Log.w(TAG, "startForeground(type=$serviceType) отклонён, повтор с phoneCall", e)
+                try {
+                    startForeground(
+                        onGoingNotificationId,
+                        notification,
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL
+                    )
+                } catch (fallback: Exception) {
+                    // Совсем не дали подняться. Гасим сервис сами: иначе система убьёт его через
+                    // 5 секунд за то, что startForeground не был вызван, и это снова будет креш.
+                    Log.e(TAG, "startForeground(phoneCall) тоже отклонён, останавливаю сервис", fallback)
+                    stopSelf()
+                }
+            }
         } else {
             startForeground(onGoingNotificationId, notification)
         }
